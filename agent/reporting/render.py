@@ -29,6 +29,8 @@ def _empty_df() -> pd.DataFrame:
             "implied_volatility",
             "delta",
             "delta_source",
+            "theta",
+            "theta_source",
             "dte",
             "annualized_yield",
             "breakeven",
@@ -444,7 +446,7 @@ def write_reports(
             tdf = tdf.copy()
 
             # Ensure optional columns exist (may be absent if candidates came from an older run)
-            for col in ("ivr", "max_profit"):
+            for col in ("ivr", "max_profit", "theta"):
                 if col not in tdf.columns:
                     tdf[col] = None
 
@@ -454,7 +456,7 @@ def write_reports(
 
             view = tdf[[
                 "bucket_label", "annualized_yield", "spot", "strike", "otm_pct",
-                "expiration", "dte", "mid", "delta", "ivr", "max_profit",
+                "expiration", "dte", "mid", "delta", "theta", "ivr", "max_profit",
                 "breakeven", "why_ranked_high",
             ]].copy()
             view["annualized_yield"] = (view["annualized_yield"] * 100).map(
@@ -464,6 +466,9 @@ def write_reports(
                 lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "—"
             )
             view["delta"] = view["delta"].map(
+                lambda x: "—" if pd.isna(x) else f"{x:.3f}"
+            )
+            view["theta"] = view["theta"].map(
                 lambda x: "—" if pd.isna(x) else f"{x:.3f}"
             )
             view["ivr"] = view["ivr"].map(
@@ -484,6 +489,8 @@ def write_reports(
                 "expiration": "Expiration",
                 "dte": "DTE",
                 "mid": "Premium",
+                "delta": "Delta",
+                "theta": "Theta",
                 "ivr": "IVR",
                 "max_profit": "Max Profit",
                 "breakeven": "Breakeven",

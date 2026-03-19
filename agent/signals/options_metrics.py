@@ -54,6 +54,41 @@ def black_scholes_delta(
     return norm.cdf(d1) - 1.0
 
 
+def black_scholes_theta(
+    strategy: str,
+    spot: float,
+    strike: float,
+    dte: int,
+    iv: float,
+    risk_free_rate: float,
+) -> Optional[float]:
+    if spot <= 0 or strike <= 0 or dte <= 0 or iv is None or iv <= 0:
+        return None
+    t = (dte * 252 / 365) / 252.0  # == dte / 365.0, keeps calendar & vol bases consistent
+    try:
+        sqrt_t = math.sqrt(t)
+        d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * iv * iv) * t) / (iv * sqrt_t)
+        d2 = d1 - iv * sqrt_t
+    except (ValueError, ZeroDivisionError):
+        return None
+
+    n_prime_d1 = norm.pdf(d1)
+    discount = math.exp(-risk_free_rate * t)
+
+    if strategy == "CALL":
+        annual_theta = (
+            -(spot * n_prime_d1 * iv) / (2.0 * sqrt_t)
+            - risk_free_rate * strike * discount * norm.cdf(d2)
+        )
+    else:
+        annual_theta = (
+            -(spot * n_prime_d1 * iv) / (2.0 * sqrt_t)
+            + risk_free_rate * strike * discount * norm.cdf(-d2)
+        )
+
+    return annual_theta / 365.0
+
+
 def annualized_yield(strategy: str, credit: float, strike: float, spot: float, dte: int) -> Optional[float]:
     if dte <= 0:
         return None
@@ -266,6 +301,25 @@ def build_option_records(
             else:
                 delta_source = "otm_fallback"
 
+        theta_raw = safe_float(r.get("theta"))
+        theta_source = "provided"
+        if theta_raw is None:
+            bs_theta = None
+            if risk_free is not None and iv is not None:
+                bs_theta = black_scholes_theta(
+                    strategy=strategy,
+                    spot=spot,
+                    strike=strike,
+                    dte=dte,
+                    iv=iv,
+                    risk_free_rate=float(risk_free),
+                )
+            if bs_theta is not None:
+                theta_raw = bs_theta
+                theta_source = "black_scholes"
+            else:
+                theta_source = "unavailable"
+
         if not _passes_delta_or_otm(strategy, delta_raw, otm_pct, config):
             _log_decision(
                 True,
@@ -309,6 +363,8 @@ def build_option_records(
             "implied_volatility": round(iv, 6) if iv is not None else None,
             "delta": round(delta_raw, 6),
             "delta_source": delta_source,
+            "theta": round(theta_raw, 6) if theta_raw is not None else None,
+            "theta_source": theta_source,
             "dte": dte,
             "annualized_yield": ann_yield,
             "breakeven": round(breakeven(strategy, strike, spot, mid), 4),

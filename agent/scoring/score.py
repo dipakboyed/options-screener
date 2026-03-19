@@ -67,14 +67,29 @@ def score_candidate(row: Dict[str, Any], technicals: Dict[str, float], config: D
     vol_component = _clamp_0_1(vol / 500.0)
     liquidity_score = 0.5 * spread_component + 0.25 * oi_component + 0.25 * vol_component
 
-    score = 0.40 * income_score + 0.25 * delta_score + 0.20 * trend_score + 0.15 * liquidity_score
+    theta = row.get("theta")
+    if theta is None:
+        theta_score = 0.5  # Neutral fallback — no data shouldn't help or hurt
+    else:
+        # Higher |theta| = faster premium decay = better for income sellers.
+        # 0.03 $/share/day is our normalization ceiling.
+        theta_score = _clamp_0_1(abs(float(theta)) / 0.03)
+
+    score = (
+        0.35 * income_score
+        + 0.20 * delta_score
+        + 0.20 * trend_score
+        + 0.15 * liquidity_score
+        + 0.10 * theta_score
+    )
 
     if bool(row.get("earnings_before_expiry")):
         score *= 1.0 - float(config["earnings_risk_penalty"])
 
     why = (
-        f"income={ann_yield:.2%}, {delta_reason}, {trend_reason}, "
-        f"spread={spread:.2%}, OI={int(oi)}, vol={int(vol)}"
+        f"income={income_score:.2f} delta={delta_score:.2f} "
+        f"trend={trend_score:.2f} liq={liquidity_score:.2f} "
+        f"theta={theta_score:.2f} \u2192 raw={score:.2f}"
     )
     if bool(row.get("earnings_before_expiry")):
         why += ", earnings-risk penalty applied"

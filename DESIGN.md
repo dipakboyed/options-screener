@@ -215,6 +215,8 @@ fundamentals_provider: always yfinance
 
 > **Delta source priority:** Public greeks API → yfinance provided delta → Black-Scholes (if IV + risk_free_rate available) → OTM% fallback → default 0.0
 
+> **Theta source priority:** Public greeks API → Black-Scholes (if IV + risk_free_rate available) → unavailable (None)
+
 ---
 
 ## Step 1 — Expiration Date Selection
@@ -307,7 +309,8 @@ Options chain (all strikes for one expiration)
   │    CALL range:  0.10 ≤ delta ≤  0.25
   │
   └─ PASSED → build candidate record
-               (30 fields including all greeks, technicals, earnings flag)
+               (32 fields including all greeks, theta, theta_source,
+                technicals, earnings flag)
 ```
 
 ---
@@ -319,17 +322,19 @@ Surviving candidates are ranked. Top 5 per bucket per strategy flow to the recom
 ```
   score_candidate()  (score.py)
 
-  Score = weighted sum of 4 components, then earnings penalty
+  Score = weighted sum of 5 components, then earnings penalty
 
   ┌───────────────────────────────────────────────────────┐
   │  Component         Weight  Formula                    │
   ├───────────────────────────────────────────────────────┤
-  │  Income            40%     log1p(yield) / log1p(1.0)  │
-  │  Delta accuracy    25%     1 − |delta − 0.20| / 0.25  │
+  │  Income            35%     log1p(yield) / log1p(1.0)  │
+  │  Delta accuracy    20%     1 − |delta − 0.20| / 0.25  │
   │                            (target: ±0.20)            │
   │  Technical trend   20%     PUT/CALL: spot vs MA20/MA50 │
   │                            penalty if RSI14 > 75      │
   │  Liquidity         15%     spread + OI + volume       │
+  │  Theta (decay)     10%     |theta| / 0.03, clamped    │
+  │                            0–1; None → 0.5 neutral    │
   └───────────────────────────────────────────────────────┘
                                ×
   Earnings multiplier:   1 − 0.20 (if earnings before expiry)
@@ -514,11 +519,11 @@ options-screener/
 │   │   └── factory.py               ← provider selection + fallback wrapper
 │   │
 │   ├── signals/
-│   │   ├── options_metrics.py       ← expiration selection, filtering, BS delta
+│   │   ├── options_metrics.py       ← expiration selection, filtering, BS delta/theta
 │   │   └── technicals.py            ← MA20, MA50, RSI14, HV20
 │   │
 │   ├── scoring/
-│   │   └── score.py                 ← multi-factor scoring (income/delta/trend/liquidity)
+│   │   └── score.py                 ← multi-factor scoring (income/delta/trend/liquidity/theta)
 │   │
 │   ├── recommendation/
 │   │   ├── cc_recommender.py        ← covered call verdict engine

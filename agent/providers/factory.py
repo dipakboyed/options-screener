@@ -33,8 +33,8 @@ def _provider_name(config: Dict[str, Any], key: str, default: str) -> str:
 class _FallbackOptionsProvider(OptionsChainProvider):
     """Wraps PublicOptionsProvider and falls back to YFinanceProvider on empty results or errors.
 
-    Also attempts to enrich delta from Public greeks even when the chain is
-    served by yfinance, so Public delta is used wherever accessible.
+    Also attempts to enrich greeks (delta, theta) from Public even when the
+    chain is served by yfinance, so Public greeks are used wherever accessible.
     """
 
     def __init__(self, primary: PublicOptionsProvider, secondary: YFinanceProvider, logger) -> None:
@@ -47,8 +47,8 @@ class _FallbackOptionsProvider(OptionsChainProvider):
         _prominent_warning(self._logger, message)
         self.fallback_events.append(message)
 
-    def _enrich_delta_from_public(self, calls: pd.DataFrame, puts: pd.DataFrame) -> None:
-        """Best-effort: inject delta from Public greeks into yfinance chain DataFrames."""
+    def _enrich_greeks_from_public(self, calls: pd.DataFrame, puts: pd.DataFrame) -> None:
+        """Best-effort: inject delta and theta from Public greeks into yfinance chain DataFrames."""
         symbols: List[str] = []
         for df in [calls, puts]:
             if not df.empty and "contractSymbol" in df.columns:
@@ -69,10 +69,15 @@ class _FallbackOptionsProvider(OptionsChainProvider):
                     (greeks.get(self._primary._normalize_osi_symbol(s)) or {}).get("delta")
                     for s in df["contractSymbol"]
                 ]
+                theta_vals = [
+                    (greeks.get(self._primary._normalize_osi_symbol(s)) or {}).get("theta")
+                    for s in df["contractSymbol"]
+                ]
                 df["delta"] = delta_vals
-            self._logger.info("Delta enriched from Public greeks for %d symbol(s)", len(greeks))
+                df["theta"] = theta_vals
+            self._logger.info("Greeks (delta, theta) enriched from Public for %d symbol(s)", len(greeks))
         except Exception as exc:
-            self._logger.debug("Public delta enrichment failed (best-effort): %s", exc)
+            self._logger.debug("Public greeks enrichment failed (best-effort): %s", exc)
 
     def get_options_expirations(self, ticker: str) -> List[date]:
         try:
@@ -91,12 +96,12 @@ class _FallbackOptionsProvider(OptionsChainProvider):
         except Exception as exc:
             self._record_fallback(f"{ticker} {expiration.isoformat()}: Public provider error fetching chain ({exc}) — using yfinance")
             calls, puts = self._secondary.get_options_chain(ticker, expiration)
-            self._enrich_delta_from_public(calls, puts)
+            self._enrich_greeks_from_public(calls, puts)
             return calls, puts
         if calls.empty and puts.empty:
             self._record_fallback(f"{ticker} {expiration.isoformat()}: Public provider returned empty chain — using yfinance")
             calls, puts = self._secondary.get_options_chain(ticker, expiration)
-            self._enrich_delta_from_public(calls, puts)
+            self._enrich_greeks_from_public(calls, puts)
             return calls, puts
         return calls, puts
 

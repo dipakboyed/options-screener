@@ -268,14 +268,17 @@ class PublicOptionsProvider(OptionsChainProvider):
                     continue
                 out[sym] = {
                     "delta": self._extract_metric(row, "delta"),
+                    "theta": self._extract_metric(row, "theta"),
                     "impliedVolatility": self._extract_metric(row, "impliedVolatility"),
                 }
             matched_with_delta = sum(1 for v in out.values() if v.get("delta") is not None)
+            matched_with_theta = sum(1 for v in out.values() if v.get("theta") is not None)
             self.logger.debug(
-                "public greeks lookup requested=%d returned=%d matched_with_delta=%d",
+                "public greeks lookup requested=%d returned=%d matched_with_delta=%d matched_with_theta=%d",
                 len(chunk),
                 len(rows),
                 matched_with_delta,
+                matched_with_theta,
             )
         return out
 
@@ -406,6 +409,7 @@ class PublicOptionsProvider(OptionsChainProvider):
                 sym = option.get("_contractSymbolKey")
                 if sym in greeks:
                     option["delta"] = greeks[sym].get("delta")
+                    option["theta"] = greeks[sym].get("theta")
                     if option.get("impliedVolatility") is None:
                         option["impliedVolatility"] = greeks[sym].get("impliedVolatility")
             for option in options:
