@@ -1,14 +1,10 @@
 ﻿covered_call_tickers:
   - MSFT
   - NVDA
-  - CMG
   - GOOGL
-  - DAL
 
 cash_secured_put_tickers:
   - TQQQ
-  - SNDK
-  - NVDA
   - AMD
   - TSM
   - GOOGL

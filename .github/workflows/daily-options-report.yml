@@ -1,0 +1,129 @@
+name: Daily Options Report
+
+# Emails the options screener report every trading day at 6:45am Pacific.
+# The report is generated on the ephemeral runner and emailed inline — nothing
+# is ever written back to the repository (reports/ is gitignored anyway).
+#
+# GitHub cron runs in UTC and does NOT observe daylight saving. To hit 6:45am
+# Pacific year-round we schedule BOTH candidate UTC times and let the gate step
+# below pick the one that actually lands on 06:45 America/Los_Angeles:
+#   * 13:45 UTC == 06:45 PDT (summer)  -> runs, 14:45 UTC == 07:45 PDT -> skipped
+#   * 14:45 UTC == 06:45 PST (winter)  -> runs, 13:45 UTC == 05:45 PST -> skipped
+on:
+  schedule:
+    - cron: "45 13 * * 1-5"   # 06:45 Pacific during PDT (summer)
+    - cron: "45 14 * * 1-5"   # 06:45 Pacific during PST (winter)
+  workflow_dispatch:           # manual runs always proceed (gate is bypassed)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-options-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Gate: only proceed at 06:45 Pacific AND on an NYSE trading session.
+      # workflow_dispatch bypasses the time/market checks so you can run on demand.
+      - name: Gate (DST-correct time + NYSE trading day)
+        id: gate
+        run: |
+          python -m pip install --quiet pandas_market_calendars
+          python <<'PY'
+          import os, sys, datetime
+          from zoneinfo import ZoneInfo
+
+          def emit(run: bool):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"should_run={'true' if run else 'false'}\n")
+
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          pac = datetime.datetime.now(ZoneInfo("America/Los_Angeles"))
+          print(f"event={event} pacific={pac.isoformat()}")
+
+          if event == "workflow_dispatch":
+              print("Manual dispatch -> run")
+              emit(True); sys.exit(0)
+
+          # DST guard: only the cron landing on 06:xx Pacific proceeds.
+          if pac.hour != 6:
+              print(f"Pacific hour is {pac.hour}, not 6 -> skip (DST guard)")
+              emit(False); sys.exit(0)
+
+          # Market-open guard: is today an NYSE trading session?
+          import pandas_market_calendars as mcal
+          today = pac.date().isoformat()
+          sched = mcal.get_calendar("NYSE").schedule(start_date=today, end_date=today)
+          if sched.empty:
+              print(f"{today} is not an NYSE trading day -> skip")
+              emit(False); sys.exit(0)
+
+          print(f"{today} 06:45 Pacific and NYSE open -> run")
+          emit(True)
+          PY
+
+      - name: Install dependencies
+        if: steps.gate.outputs.should_run == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate report
+        if: steps.gate.outputs.should_run == 'true'
+        env:
+          PUBLIC_API_KEY: ${{ secrets.PUBLIC_API_KEY }}
+        run: python main.py --config config.yaml
+
+      - name: Email report (inline HTML)
+        if: steps.gate.outputs.should_run == 'true'
+        env:
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: diboyed@gmail.com
+        run: |
+          python <<'PY'
+          import os, glob, smtplib, datetime
+          from email.message import EmailMessage
+          from zoneinfo import ZoneInfo
+
+          reports = sorted(glob.glob("reports/*_options_report.html"))
+          if not reports:
+              raise SystemExit("No HTML report found in reports/ — did the run succeed?")
+          path = reports[-1]
+          with open(path, encoding="utf-8") as fh:
+              html = fh.read()
+
+          pac_date = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
+          msg = EmailMessage()
+          msg["Subject"] = f"Options Screener Report — {pac_date}"
+          msg["From"] = os.environ["MAIL_USERNAME"]
+          msg["To"] = os.environ["MAIL_TO"]
+          msg.set_content("Your options screener report is below. Open in an HTML-capable mail client to view it.")
+          msg.add_alternative(html, subtype="html")
+
+          with smtplib.SMTP("smtp.gmail.com", 587) as s:
+              s.starttls()
+              s.login(os.environ["MAIL_USERNAME"], os.environ["MAIL_PASSWORD"])
+              s.send_message(msg)
+          print(f"Sent {path} to {os.environ['MAIL_TO']}")
+          PY
+
+      - name: Upload report artifact
+        if: steps.gate.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: options-report
+          path: reports/*_options_report.*
+          retention-days: 14
+          if-no-files-found: error
