@@ -38,8 +38,23 @@ DEFAULT_CC_REC_CONFIG: Dict[str, Any] = {
     "delta_max": 0.25,
     "use_resistance_filter": True,
     "resistance_pct_buffer": 0.02,
+    "best_only": True,
+    "max_per_term": 1,
+    "keep_medium_long": True,
+    "near_term_buckets": [
+        {"label": "~1 Day", "min_dte": 0, "max_dte": 1},
+        {"label": "~3 Day", "min_dte": 2, "max_dte": 3},
+        {"label": "~5 Day", "min_dte": 4, "max_dte": 6},
+    ],
     "min_acceptable_sale_prices": {},  # ticker -> float, optional per-ticker floor
 }
+
+
+# Fixed term buckets appended after the near-term buckets when keep_medium_long is on.
+_MEDIUM_LONG_BUCKETS = [
+    {"label": "Medium-Term", "min_dte": 15, "max_dte": 28},
+    {"label": "Long-Term", "min_dte": 29, "max_dte": 10_000},
+]
 
 
 # ── Resistance levels ───────────────────────────────────────────────────────
@@ -225,6 +240,19 @@ def _recommend_for_bucket(
 
 # ── Per-ticker entry point ──────────────────────────────────────────────────
 
+def _resolve_cc_buckets(rec_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build the ordered list of CC term buckets from config.
+
+    Near-term buckets (config-driven) come first; Medium/Long-Term are appended
+    when keep_medium_long is true. Each bucket is {label, min_dte, max_dte} inclusive.
+    """
+    near_term = rec_config.get("near_term_buckets") or DEFAULT_CC_REC_CONFIG["near_term_buckets"]
+    buckets = [dict(b) for b in near_term]
+    if rec_config.get("keep_medium_long", True):
+        buckets.extend(dict(b) for b in _MEDIUM_LONG_BUCKETS)
+    return buckets
+
+
 def recommend_cc_for_ticker(
     ticker: str,
     candidates: List[Dict[str, Any]],
@@ -235,38 +263,32 @@ def recommend_cc_for_ticker(
     rec_config: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
     """
-    Produce CC suggestions (Short-Term / Medium-Term / Long-Term) for one ticker.
+    Produce CC suggestions for one ticker across the configured term buckets
+    (near-term ~1d/~3d/~5d, plus Medium/Long-Term when keep_medium_long is on).
     Returns a flat list of suggestion dicts, ≥1 per term.
     """
+    buckets = _resolve_cc_buckets(rec_config)
     spot = float(technicals.get("spot", 0))
     if spot <= 0:
         no_data = _make_base_row(ticker, "", spot, min_acceptable_price)
         no_data["reason"] = "Spot price unavailable"
-        return [
-            {**no_data, "term": "Short-Term"},
-            {**no_data, "term": "Medium-Term"},
-            {**no_data, "term": "Long-Term"},
-        ]
+        return [{**no_data, "term": b["label"]} for b in buckets]
 
     max_suggestions = int(rec_config.get("max_suggestions_per_term", 3))
 
     all_calls = [c for c in candidates if c.get("strategy") == "CALL"]
-    short_term_calls  = [c for c in all_calls if (c.get("dte") or 99) <= 14]
-    medium_term_calls = [c for c in all_calls if 14 < (c.get("dte") or 0) <= 28]
-    long_term_calls   = [c for c in all_calls if (c.get("dte") or 0) > 28]
 
     resistance = get_resistance_levels(price_df)
 
     results: List[Dict[str, Any]] = []
-    for term_label, pool in [
-        ("Short-Term",  short_term_calls),
-        ("Medium-Term", medium_term_calls),
-        ("Long-Term",   long_term_calls),
-    ]:
+    for bucket in buckets:
+        lo = int(bucket.get("min_dte", 0))
+        hi = int(bucket.get("max_dte", 10_000))
+        pool = [c for c in all_calls if lo <= (c.get("dte") if c.get("dte") is not None else -1) <= hi]
         results.extend(
             _recommend_for_bucket(
                 ticker=ticker,
-                term_label=term_label,
+                term_label=bucket["label"],
                 call_candidates=pool,
                 resistance=resistance,
                 technicals=technicals,
@@ -289,7 +311,11 @@ def build_cc_recommendations(
 ) -> List[Dict[str, Any]]:
     """
     Run CC recommendation engine for all covered-call tickers.
-    Returns list grouped by ticker/term, sorted Yes → Borderline within each group.
+
+    When best_only is on, only "Yes" verdicts are kept and at most max_per_term
+    rows are retained per (ticker, term) — the "best recommendations only" view.
+    Otherwise all suggestions are returned (legacy verbose behaviour).
+    Results are ordered near-term → Medium → Long, then by yield desc.
     Capped at max_recommendations.
     """
     rec_config = config.get("cc_recommendation", {})
@@ -297,7 +323,13 @@ def build_cc_recommendations(
         return []
 
     max_recs = int(rec_config.get("max_recommendations", 50))
+    best_only = bool(rec_config.get("best_only", False))
+    max_per_term = int(rec_config.get("max_per_term", 1))
     min_prices: Dict[str, Any] = rec_config.get("min_acceptable_sale_prices") or {}
+
+    # Term ordering follows the configured bucket order (near-term first).
+    buckets = _resolve_cc_buckets(rec_config)
+    term_order = {b["label"]: i for i, b in enumerate(buckets)}
 
     results: List[Dict[str, Any]] = []
     for ticker in cc_tickers:
@@ -313,13 +345,24 @@ def build_cc_recommendations(
             min_acceptable_price=min_price,
             rec_config=rec_config,
         )
-        results.extend(recs)
 
-    term_order = {"Short-Term": 0, "Medium-Term": 1, "Long-Term": 2}
+        if best_only:
+            # Keep only "Yes" verdicts, at most max_per_term per (ticker, term),
+            # ranked by annualized yield desc. Tickers/terms with no "Yes" are dropped.
+            by_term: Dict[str, List[Dict[str, Any]]] = {}
+            for r in recs:
+                if r.get("recommend") == "Yes":
+                    by_term.setdefault(r.get("term", ""), []).append(r)
+            for term, rows in by_term.items():
+                rows.sort(key=lambda x: float(x.get("annualized_yield") or 0), reverse=True)
+                results.extend(rows[:max_per_term])
+        else:
+            results.extend(recs)
+
     results.sort(
         key=lambda r: (
             r["ticker"],
-            term_order.get(r.get("term", ""), 9),
+            term_order.get(r.get("term", ""), 99),
             -(float(r.get("annualized_yield") or 0)),
         )
     )

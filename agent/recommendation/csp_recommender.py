@@ -343,6 +343,7 @@ def build_csp_recommendations(
         return []
 
     max_recs = int(rec_config.get("max_recommendations", 30))
+    best_per_ticker = bool(rec_config.get("best_per_ticker", False))
 
     results: List[Dict[str, Any]] = []
     for ticker in csp_tickers:
@@ -355,13 +356,39 @@ def build_csp_recommendations(
             earnings_date=tr.get("earnings_date"),
             rec_config=rec_config,
         )
-        results.extend(recs)
+
+        if best_per_ticker:
+            best = _select_best_csp(recs)
+            if best is not None:
+                results.append(best)
+        else:
+            results.extend(recs)
 
     term_order = {"Short-Term": 0, "Medium-Term": 1, "Long-Term": 2}
     results.sort(
         key=lambda r: (
+            r.get("ticker", ""),
             term_order.get(r.get("term", ""), 9),
             -(float(r.get("annualized_yield") or 0)),
         )
     )
     return results[:max_recs]
+
+
+def _select_best_csp(recs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pick the single best CSP row for a ticker.
+
+    Prefers the highest-yield "Yes" verdict. Falls back to the highest-yield
+    non-"No" row, then to the highest-yield row overall. Returns None only when
+    the ticker produced no rows at all.
+    """
+    if not recs:
+        return None
+    verdict_rank = {"Yes": 0, "Borderline": 1, "No": 2}
+    return min(
+        recs,
+        key=lambda r: (
+            verdict_rank.get(r.get("recommend", "No"), 3),
+            -(float(r.get("annualized_yield") or 0)),
+        ),
+    )

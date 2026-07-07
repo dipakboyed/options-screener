@@ -1,5 +1,21 @@
 # options-screener
 
+## Report output
+
+The daily run writes a **simplified, recommendation-only** report to `./reports`:
+
+- **Covered Call Recommendations** (headline) — near-term buckets `~1 Day` (0–1 DTE),
+  `~3 Day` (2–3), `~5 Day` (4–6), plus `Medium-Term` (15–28) and `Long-Term` (29–45)
+  when they are a ticker's best option. Only `Yes` verdicts are shown, at most one per
+  ticker per term. Note: 7–14 DTE is an intentional gap.
+- **CSP Recommendations** — the single best cash-secured put per ticker.
+
+The former per-ticker detailed screening tables have been removed from both the HTML and
+CSV. The CSV now contains one row per recommendation
+(`type,ticker,term,recommend,expiration,dte,spot,strike,premium,annualized_yield,delta,ivr,max_profit,breakeven,reason`).
+Set `cc_recommendation.best_only: false` / `csp_recommendation.best_per_ticker: false` to
+restore the fuller view.
+
 ## Data Source Map (Hybrid)
 
 You can configure providers by role in `config.yaml`:

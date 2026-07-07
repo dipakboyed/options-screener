@@ -8,48 +8,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 
-def _empty_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        columns=[
-            "run_date",
-            "ticker",
-            "bucket",
-            "bucket_label",
-            "expiration",
-            "strategy",
-            "contract_symbol",
-            "spot",
-            "strike",
-            "bid",
-            "ask",
-            "mid",
-            "spread_pct",
-            "volume",
-            "open_interest",
-            "implied_volatility",
-            "delta",
-            "delta_source",
-            "theta",
-            "theta_source",
-            "dte",
-            "annualized_yield",
-            "breakeven",
-            "max_profit",
-            "otm_pct",
-            "ivr",
-            "ivr_source",
-            "earnings_date",
-            "earnings_before_expiry",
-            "ma20",
-            "ma50",
-            "rsi14",
-            "hv20",
-            "score",
-            "why_ranked_high",
-        ]
-    )
-
-
 def _fmt_money(val: Optional[float], prefix: str = "$") -> str:
     if val is None:
         return "—"
@@ -328,6 +286,64 @@ def _render_csp_recommendations(
     html_parts.append("</details>")
 
 
+def _write_recommendations_csv(
+    csv_path: Path,
+    cc_recommendations: List[Dict[str, Any]],
+    csp_recommendations: List[Dict[str, Any]],
+) -> None:
+    """Write the simplified recommendation rows (CC + CSP) to CSV.
+
+    Replaces the previous full candidate dump. Both strategies share one schema
+    so the file stays compact and matches what the HTML report shows.
+    """
+    columns = [
+        "type", "ticker", "term", "recommend", "expiration", "dte", "spot",
+        "strike", "premium", "annualized_yield", "delta", "ivr", "max_profit",
+        "breakeven", "reason",
+    ]
+
+    rows: List[Dict[str, Any]] = []
+    for rec in cc_recommendations:
+        rows.append({
+            "type": "CC",
+            "ticker": rec.get("ticker"),
+            "term": rec.get("term"),
+            "recommend": rec.get("recommend"),
+            "expiration": rec.get("expiration"),
+            "dte": rec.get("dte"),
+            "spot": rec.get("spot"),
+            "strike": rec.get("strike"),
+            "premium": rec.get("premium"),
+            "annualized_yield": rec.get("annualized_yield"),
+            "delta": rec.get("delta"),
+            "ivr": rec.get("ivr"),
+            "max_profit": rec.get("max_profit"),
+            "breakeven": rec.get("downside_breakeven"),
+            "reason": rec.get("reason"),
+        })
+    for rec in csp_recommendations:
+        rows.append({
+            "type": "CSP",
+            "ticker": rec.get("ticker"),
+            "term": rec.get("term"),
+            "recommend": rec.get("recommend"),
+            "expiration": rec.get("expiration"),
+            "dte": rec.get("dte"),
+            "spot": rec.get("spot"),
+            "strike": rec.get("strike"),
+            "premium": rec.get("premium"),
+            "annualized_yield": rec.get("annualized_yield"),
+            "delta": rec.get("delta"),
+            "ivr": rec.get("ivr"),
+            "max_profit": rec.get("max_profit"),
+            "breakeven": rec.get("breakeven"),
+            "reason": rec.get("reason"),
+        })
+
+    df = pd.DataFrame(rows, columns=columns)
+    df.to_csv(csv_path, index=False)
+
+
 def write_reports(
     candidates: List[Dict[str, Any]],
     config: Dict[str, Any],
@@ -343,12 +359,8 @@ def write_reports(
     csv_path = output_dir / f"{run_day}_options_report.csv"
     html_path = output_dir / f"{run_day}_options_report.html"
 
-    df = pd.DataFrame(candidates) if candidates else _empty_df()
-    if not df.empty:
-        df = df.sort_values(["ticker", "bucket", "strategy", "score"], ascending=[True, True, True, False])
-    df.to_csv(csv_path, index=False)
-
-    term_order_map = {"Short-Term": 0, "Medium-Term": 1, "Long-Term": 2}
+    # CSV now exports the recommendation rows (CC + CSP), not the full candidate dump.
+    _write_recommendations_csv(csv_path, cc_recommendations or [], csp_recommendations or [])
 
     html_parts: List[str] = []
     html_parts.append("<!DOCTYPE html><html><head><meta charset='utf-8'>")
@@ -365,9 +377,6 @@ def write_reports(
         ".section>summary{font-size:16px;font-weight:700;background:#0969da;color:#fff;border:none;}"
         ".section>summary:hover{background:#0860ca;}"
         ".section>summary::before{color:#fff;}"
-        ".ticker-block{margin-left:20px;}"
-        ".ticker-block>summary{font-size:13px;font-weight:600;background:#f6f8fa;border:1px solid #d0d7de;color:#24292f;}"
-        ".ticker-block>summary:hover{background:#eaf0fb;}"
         "table{border-collapse:collapse;width:auto;margin:6px 0 6px 20px;}"
         "th,td{border:1px solid #d0d7de;padding:3px 6px;font-size:12px;text-align:left;white-space:nowrap;vertical-align:top;}"
         "th{background:#f6f8fa;font-weight:600;}"
@@ -375,10 +384,6 @@ def write_reports(
         ".count{font-weight:400;font-size:13px;opacity:0.85;margin-left:6px;}"
         ".note{font-size:12px;color:#444;padding:8px;background:#fff8c5;border:1px solid #e3b341;border-radius:4px;margin-bottom:12px;}"
         "a{color:inherit;}"
-        ".section-puts>summary{background:#1a7f37;}"
-        ".section-puts>summary:hover{background:#166f30;}"
-        ".section-calls>summary{background:#6639ba;}"
-        ".section-calls>summary:hover{background:#5b33a8;}"
         ".section-rec>summary{background:#9a6700;color:#fff;font-size:17px;}"
         ".section-rec>summary:hover{background:#875d00;}"
         ".section-rec>summary::before{color:#fff;}"
@@ -426,143 +431,19 @@ def write_reports(
         )
         html_parts.append("</div>")
 
-    # ── CSP Recommendations ────────────────────────────────────────────────────
+    # ── Covered Call Recommendations (near-term headline) ──────────────────────
+    if cc_recommendations:
+        _render_cc_recommendations(cc_recommendations, html_parts)
+    else:
+        html_parts.append(
+            "<p class='note'>No qualifying near-term covered calls today.</p>"
+        )
+
+    # ── CSP Recommendations (single best per ticker) ───────────────────────────
     if csp_recommendations:
         _render_csp_recommendations(csp_recommendations, html_parts)
 
-    # ── CC Recommendations ─────────────────────────────────────────────────────
-    if cc_recommendations:
-        _render_cc_recommendations(cc_recommendations, html_parts)
-
-    # ── Screening results ──────────────────────────────────────────────────────
-    if df.empty:
-        html_parts.append("<p>No candidates passed filters today.</p>")
-    else:
-        def render_ticker_block(tdf: pd.DataFrame, ticker: str) -> None:
-            fidelity_url = (
-                f"https://digital.fidelity.com/ftgw/digital/options-research/?symbol={ticker}"
-            )
-            n = len(tdf)
-            tdf = tdf.copy()
-
-            # Ensure optional columns exist (may be absent if candidates came from an older run)
-            for col in ("ivr", "max_profit", "theta"):
-                if col not in tdf.columns:
-                    tdf[col] = None
-
-            tdf = tdf.sort_values(
-                ["expiration", "annualized_yield"], ascending=[True, False], na_position="last"
-            )
-
-            view = tdf[[
-                "bucket_label", "annualized_yield", "spot", "strike", "otm_pct",
-                "expiration", "dte", "mid", "delta", "theta", "ivr", "max_profit",
-                "breakeven", "why_ranked_high",
-            ]].copy()
-            view["annualized_yield"] = (view["annualized_yield"] * 100).map(
-                lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
-            )
-            view["otm_pct"] = view["otm_pct"].map(
-                lambda x: f"{x * 100:.2f}%" if pd.notna(x) else "—"
-            )
-            view["delta"] = view["delta"].map(
-                lambda x: "—" if pd.isna(x) else f"{x:.3f}"
-            )
-            view["theta"] = view["theta"].map(
-                lambda x: "—" if pd.isna(x) else f"{x:.3f}"
-            )
-            view["ivr"] = view["ivr"].map(
-                lambda x: "—" if pd.isna(x) or x is None else f"{x:.1f}%"
-            )
-            view["max_profit"] = view["max_profit"].map(
-                lambda x: "—" if pd.isna(x) or x is None else f"${x:,.2f}"
-            )
-            view["breakeven"] = view["breakeven"].map(
-                lambda x: "—" if pd.isna(x) or x is None else f"${x:,.2f}"
-            )
-            view = view.rename(columns={
-                "bucket_label": "Term",
-                "annualized_yield": "Ann. Yield",
-                "spot": "Current Price",
-                "strike": "Strike",
-                "otm_pct": "% OTM",
-                "expiration": "Expiration",
-                "dte": "DTE",
-                "mid": "Premium",
-                "delta": "Delta",
-                "theta": "Theta",
-                "ivr": "IVR",
-                "max_profit": "Max Profit",
-                "breakeven": "Breakeven",
-                "why_ranked_high": "Why",
-            })
-
-            count_label = f"{n} candidate{'s' if n != 1 else ''}"
-            html_parts.append("<details class='ticker-block'>")
-            html_parts.append(
-                f"<summary>"
-                f"<a href='{fidelity_url}' target='_blank' rel='noopener noreferrer'>{ticker}</a>"
-                f"<span class='count'>({count_label})</span>"
-                f"</summary>"
-            )
-            # Build HTML table manually to apply expiration-based row banding
-            display_cols = list(view.columns)
-            tbl_html = ["<table class='table'><thead><tr>"]
-            for col in display_cols:
-                tbl_html.append(f"<th>{escape(col)}</th>")
-            tbl_html.append("</tr></thead><tbody>")
-
-            _GRP_COLORS = ("#ffffff", "#e8f0ff")
-            prev_exp = None
-            grp_idx = -1
-            for _, row in view.iterrows():
-                exp_val = str(row.get("Expiration", ""))
-                if exp_val != prev_exp:
-                    grp_idx += 1
-                    prev_exp = exp_val
-                row_bg = _GRP_COLORS[grp_idx % 2]
-                tbl_html.append(f"<tr style='background-color:{row_bg}'>")
-                for col in display_cols:
-                    cell = row[col]
-                    if col in ("Current Price", "Strike", "Premium"):
-                        try:
-                            cell_str = f"${float(cell):,.2f}"
-                        except (ValueError, TypeError):
-                            cell_str = "—"
-                    elif col == "DTE":
-                        try:
-                            cell_str = str(int(float(cell)))
-                        except (ValueError, TypeError):
-                            cell_str = "—"
-                    else:
-                        try:
-                            cell_str = "—" if pd.isna(cell) else str(cell)
-                        except TypeError:
-                            cell_str = str(cell) if cell is not None else "—"
-                    tbl_html.append(f"<td>{escape(cell_str)}</td>")
-                tbl_html.append("</tr>")
-            tbl_html.append("</tbody></table>")
-            html_parts.append("".join(tbl_html))
-            html_parts.append("</details>")
-
-        def render_section(section_df: pd.DataFrame, title: str, css_class: str) -> None:
-            n = len(section_df)
-            count_label = f"{n} candidate{'s' if n != 1 else ''}"
-            html_parts.append(f"<details class='section {css_class}'>")
-            html_parts.append(
-                f"<summary>{title}<span class='count'>({count_label})</span></summary>"
-            )
-            for ticker in sorted(section_df["ticker"].unique()):
-                render_ticker_block(section_df[section_df["ticker"] == ticker], ticker)
-            html_parts.append("</details>")
-
-        puts_df = df[df["strategy"] == "PUT"]
-        calls_df = df[df["strategy"] == "CALL"]
-
-        if not puts_df.empty:
-            render_section(puts_df, "Cash-Secured Puts", "section-puts")
-        if not calls_df.empty:
-            render_section(calls_df, "Covered Calls", "section-calls")
+    # Detailed per-ticker screening sections removed — report shows best recommendations only.
 
     html_parts.append("<hr>")
     html_parts.append(

@@ -365,11 +365,14 @@ Surviving candidates are ranked. Top 5 per bucket per strategy flow to the recom
 ### Covered Call Recommender
 
 ```
-Input: top-scored CALL candidates per ticker, split by DTE into 3 pools
+Input: top-scored CALL candidates per ticker, split by DTE into term buckets
 
   recommend_cc_for_ticker()
   ─────────────────────────
-  Per term (Short-Term DTE≤14 / Medium-Term 15-28 / Long-Term >28):
+  Per term bucket (config-driven near-term + Medium/Long):
+    ~1 Day (0–1 DTE) / ~3 Day (2–3) / ~5 Day (4–6)
+    + Medium-Term (15–28) + Long-Term (29–45)   [when keep_medium_long]
+    NOTE: 7–14 DTE is an intentional gap (near-term focus).
 
     1. Sort candidates: delta-qualified first, then by score
     2. Take top N (max_suggestions_per_term = 3)
@@ -387,7 +390,12 @@ Input: top-scored CALL candidates per ticker, split by DTE into 3 pools
        │    below min price)                       │
        └───────────────────────────────────────────┘
 
-    4. Always ≥1 suggestion per term, even if all Borderline
+  build_cc_recommendations() then applies the "best only" filter
+  (default): keep only YES verdicts, at most max_per_term (=1) per
+  (ticker, term), ranked by annualized yield. Tickers/terms with no
+  YES are dropped — so Medium/Long-Term appear only when they are a
+  ticker's genuine best option. Set best_only: false to restore the
+  legacy verbose behaviour (≥1 suggestion per term, incl. Borderline).
 
   IVR is computed and displayed (HV Rank proxy) but
   does NOT affect the CC verdict.
@@ -405,8 +413,10 @@ Input: top-scored PUT candidates per ticker, split by DTE into 3 pools
 
   recommend_csp_for_ticker()
   ──────────────────────────
-  Returns one recommendation per term per ticker (3 total):
-    Short-Term (DTE ≤ 14) / Medium-Term (15–28) / Long-Term (>28)
+  Evaluates one recommendation per term (Short-Term ≤14 /
+  Medium-Term 15–28 / Long-Term >28), then build_csp_recommendations()
+  collapses to the SINGLE BEST row per ticker (best_per_ticker, default
+  on): highest-yield YES, falling back to the best available verdict.
 
        VERDICT LOGIC:
        ┌───────────────────────────────────────────┐
@@ -439,39 +449,38 @@ Input: top-scored PUT candidates per ticker, split by DTE into 3 pools
 ```
   write_reports()  (render.py)
   ─────────────────────────────
-  Outputs:
-    ./reports/{date}_options_report.csv   ← all candidate records
+  Outputs (simplified — best recommendations only):
+    ./reports/{date}_options_report.csv   ← CC + CSP recommendation rows
     ./reports/{date}_options_report.html  ← interactive report
+
+  CSV schema (one row per recommendation):
+    type,ticker,term,recommend,expiration,dte,spot,strike,premium,
+    annualized_yield,delta,ivr,max_profit,breakeven,reason
 
   HTML layout (top to bottom):
   ┌────────────────────────────────────────────────────┐
   │  ⚠ Provider fallback warning (if Public→yf used)   │
   ├────────────────────────────────────────────────────┤
-  │  [CC Recommendations table]                        │
-  │    Blue theme; 1 row per suggestion                │
+  │  [Covered Call Recommendations table] (headline)   │
+  │    Near-term first (~1d/~3d/~5d), then Med/Long     │
+  │    Blue theme; ≤1 YES row per ticker per term       │
   │    Columns: Ticker | Term | Verdict | Spot |       │
   │    Strike | %OTM | Exp | DTE | Premium | Delta |   │
   │    IVR★ | MaxProfit | Breakeven | AnnYield |       │
   │    Flags | Why                                     │
-  │    ★ IVR displayed for reference only              │
+  │    (empty → "No qualifying near-term covered calls")│
   ├────────────────────────────────────────────────────┤
   │  [CSP Recommendations table]                       │
-  │    Gold theme; 1 row per term per ticker           │
+  │    Gold theme; single best row per ticker          │
   │    Columns: Ticker | Term | Verdict | Spot |       │
   │    Strike | %ToStrike | Exp | DTE | Premium |      │
   │    Delta | IVR★ | MaxProfit | Breakeven | CashReq │
   │    AnnYield | Why                                  │
-  ├────────────────────────────────────────────────────┤
-  │  [Covered Calls screening] (collapsible, purple)   │
-  │    Per-ticker collapsible blocks                   │
-  │    Columns match rec table (minus Recommend/Term): │
-  │    Term | Trade | Spot | Strike | %OTM | Exp |    │
-  │    DTE | Premium | Delta | IVR | MaxProfit |       │
-  │    Breakeven | AnnYield | Why                      │
-  ├────────────────────────────────────────────────────┤
-  │  [Cash-Secured Puts screening] (collapsible, green)│
-  │    Same layout as Covered Calls above              │
   └────────────────────────────────────────────────────┘
+
+  The former per-ticker "Covered Calls" / "Cash-Secured Puts" detailed
+  screening sections have been removed (from both HTML and CSV) to keep
+  the report focused on the best actionable recommendations.
 
   Verdict colours:  ■ Yes = green   ■ Borderline = yellow   ■ No = red
   Links: each ticker links to Fidelity options research page
@@ -495,8 +504,13 @@ Input: top-scored PUT candidates per ticker, split by DTE into 3 pools
 | `risk_free_rate` | 5% | Used in Black-Scholes delta calculation |
 | `price_history_period` | 1y | Used for MA, RSI, HV, IVR proxy |
 | `max_candidates_per_ticker_per_bucket` | 5 | Top N kept after scoring per bucket |
-| `cc_recommendation.max_suggestions_per_term` | 3 | Suggestions shown per term in CC table |
+| `cc_recommendation.max_suggestions_per_term` | 3 | Suggestions computed per term (before best_only filter) |
 | `cc_recommendation.delta_min/max` | 0.10 / 0.25 | Delta range for CC verdict |
+| `cc_recommendation.best_only` | true | Keep only YES verdicts (hide Borderline/No) |
+| `cc_recommendation.max_per_term` | 1 | Max YES rows per ticker per term after best_only |
+| `cc_recommendation.keep_medium_long` | true | Also surface Medium/Long-Term CCs when they are a ticker's best |
+| `cc_recommendation.near_term_buckets` | ~1d/~3d/~5d | Config-driven near-term DTE buckets (replaces Short-Term) |
+| `csp_recommendation.best_per_ticker` | true | Show only the single best CSP per ticker |
 | `csp_recommendation.ivr_min` | 30% | IVR hard floor for CSP verdict |
 | `options_data_provider` | yfinance | `yfinance` or `public` |
 
