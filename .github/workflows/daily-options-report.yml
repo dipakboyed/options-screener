@@ -6,9 +6,16 @@ name: Daily Options Report
 #
 # GitHub cron runs in UTC and does NOT observe daylight saving. To hit 6:45am
 # Pacific year-round we schedule BOTH candidate UTC times and let the gate step
-# below pick the one that actually lands on 06:45 America/Los_Angeles:
+# below pick the one that maps to 06:45 America/Los_Angeles:
 #   * 13:45 UTC == 06:45 PDT (summer)  -> runs, 14:45 UTC == 07:45 PDT -> skipped
 #   * 14:45 UTC == 06:45 PST (winter)  -> runs, 13:45 UTC == 05:45 PST -> skipped
+#
+# IMPORTANT: GitHub's scheduler is frequently DELAYED (often 1-2+ hours under
+# load), so a cron set for 13:45 UTC may not actually execute until 15:xx/16:xx
+# UTC. The gate therefore must NOT key off the wall-clock execution time (a
+# delayed run lands at Pacific hour 7/8/9 and would be wrongly skipped). Instead
+# it keys off WHICH cron fired (github.event.schedule) and the current Pacific
+# UTC offset, which is immune to delivery delay.
 on:
   schedule:
     - cron: "45 13 * * 1-5"   # 06:45 Pacific during PDT (summer)
@@ -34,10 +41,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Gate: only proceed at 06:45 Pacific AND on an NYSE trading session.
-      # workflow_dispatch bypasses the time/market checks so you can run on demand.
-      - name: Gate (DST-correct time + NYSE trading day)
+      # Gate: proceed only for the cron that maps to 06:45 Pacific today AND on an
+      # NYSE trading session. workflow_dispatch bypasses both checks (run on demand).
+      # This is delay-tolerant: it uses which cron fired, not the execution time.
+      - name: Gate (DST-correct cron + NYSE trading day)
         id: gate
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           python -m pip install --quiet pandas_market_calendars
           python <<'PY'
@@ -49,16 +59,24 @@ jobs:
                   f.write(f"should_run={'true' if run else 'false'}\n")
 
           event = os.environ.get("GITHUB_EVENT_NAME", "")
+          schedule = os.environ.get("SCHEDULE", "")
           pac = datetime.datetime.now(ZoneInfo("America/Los_Angeles"))
-          print(f"event={event} pacific={pac.isoformat()}")
+          print(f"event={event} schedule={schedule!r} pacific={pac.isoformat()}")
 
           if event == "workflow_dispatch":
               print("Manual dispatch -> run")
               emit(True); sys.exit(0)
 
-          # DST guard: only the cron landing on 06:xx Pacific proceeds.
-          if pac.hour != 6:
-              print(f"Pacific hour is {pac.hour}, not 6 -> skip (DST guard)")
+          # DST guard (delay-proof): pick the cron whose UTC time equals 06:45
+          # Pacific for TODAY's offset, based on which cron actually fired --
+          # independent of when GitHub got around to running it.
+          #   PDT (offset -7): 13:45 UTC == 06:45 -> "45 13 * * 1-5"
+          #   PST (offset -8): 14:45 UTC == 06:45 -> "45 14 * * 1-5"
+          offset_hours = int(pac.utcoffset().total_seconds() // 3600)
+          correct = "45 13 * * 1-5" if offset_hours == -7 else "45 14 * * 1-5"
+          if schedule != correct:
+              print(f"schedule {schedule!r} is not the 06:45 Pacific cron "
+                    f"({correct!r}) for UTC offset {offset_hours} -> skip")
               emit(False); sys.exit(0)
 
           # Market-open guard: is today an NYSE trading session?
@@ -69,7 +87,7 @@ jobs:
               print(f"{today} is not an NYSE trading day -> skip")
               emit(False); sys.exit(0)
 
-          print(f"{today} 06:45 Pacific and NYSE open -> run")
+          print(f"{today}: 06:45 Pacific cron fired and NYSE open -> run")
           emit(True)
           PY
 
