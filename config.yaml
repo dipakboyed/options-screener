@@ -8,6 +8,7 @@ cash_secured_put_tickers:
   - AMD
   - TSM
   - GOOGL
+  - SNDK
 
 max_candidates_per_ticker_per_bucket: 5
 options_data_provider: public
@@ -24,9 +25,9 @@ delta_put_max: -0.1
 delta_call_min: 0.1
 delta_call_max: 0.25
 
-max_dte: 45              # Hard cap — expirations beyond this are ignored
+max_dte: 90              # Hard cap — expirations beyond this are ignored
 short_term_max_dte: 14   # DTE ≤ 14 → Short-Term  (all expirations fetched)
-medium_term_max_dte: 28  # DTE ≤ 28 → Medium-Term (Fridays only beyond 14 DTE)
+medium_term_max_dte: 45  # DTE ≤ 28 → Medium-Term (Fridays only beyond 14 DTE)
 
 min_open_interest: null
 min_volume: null
